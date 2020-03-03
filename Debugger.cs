@@ -6,7 +6,7 @@ using System.Linq;
 namespace KizhiPart3
 {
     public class Debugger
-    {
+    { 
         private TextWriter _writer;
 
         private const string ErrorMessage = "Переменная отсутствует в памяти";
