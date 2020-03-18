@@ -17,14 +17,19 @@ namespace KizhiPart3
 
         private readonly HashSet<int> _breakPoints;
         private readonly Stack<(int line, string funcName, CommandModel breaker)> _stackTrace;
-        private readonly LinkedList<CommandModel> _executionQueue;
+        private readonly List<CommandModel> _executionQueue;
+
+        private LinkedList<CommandModel> _currentRunningExecutionQueue;
+        private HashSet<int> _currentRunningBreakPoints;
 
         public Debugger(TextWriter writer)
         {
             _writer = writer;
             _functions = new Dictionary<string, List<CommandModel>>();
             _variables = new Dictionary<string, VariableModel>();
-            _executionQueue = new LinkedList<CommandModel>();
+            _executionQueue = new List<CommandModel>();
+            _currentRunningExecutionQueue = new LinkedList<CommandModel>();
+            _currentRunningBreakPoints = new HashSet<int>();
             _breakPoints = new HashSet<int>();
             _stackTrace = new Stack<(int line, string funcName, CommandModel breaker)>();
 
@@ -49,7 +54,9 @@ namespace KizhiPart3
 
             if (command.StartsWith("add break"))
             {
-                _breakPoints.Add(int.Parse(command.Substring(9)));
+                var breakPoint = int.Parse(command.Substring(9));
+                _breakPoints.Add(breakPoint);
+                _currentRunningBreakPoints.Add(breakPoint);
                 return;
             }
 
@@ -110,43 +117,45 @@ namespace KizhiPart3
                     continue;
                 }
 
-                _executionQueue.AddLast(ParseCodeLine(i, codeLine));
+                _executionQueue.Add(ParseCodeLine(i, codeLine));
             }
+
+            _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
         }
 
-        private void InsertFunctionCommand(string funcName)
+        private void InsertFunctionCommands(string funcName)
         {
             var currentFuncCommandsQueue = _functions[funcName];
             for (var i = currentFuncCommandsQueue.Count - 1; i >= 0; i--)
             {
-                _executionQueue.AddFirst(currentFuncCommandsQueue[i]);
+                _currentRunningExecutionQueue.AddFirst(currentFuncCommandsQueue[i]);
             }
         }
 
         private void Run()
         {
-            while (_executionQueue.Count > 0)
+            while (_currentRunningExecutionQueue.Count > 0)
             {
-                var currentCommand = _executionQueue.First.Value;
-                if (_breakPoints.Contains(currentCommand.LineIndex))
+                var currentCommand = _currentRunningExecutionQueue.First.Value;
+                if (_currentRunningBreakPoints.Contains(currentCommand.LineIndex))
                 {
-                    _breakPoints.Remove(currentCommand.LineIndex);
+                    _currentRunningBreakPoints.Remove(currentCommand.LineIndex);
                     return;
                 }
-                _executionQueue.RemoveFirst();
+                _currentRunningExecutionQueue.RemoveFirst();
 
                 if (currentCommand.CommandName == "call")
                 {
                     var funcName = currentCommand.CommandParameters[0];
                     _stackTrace.Push((currentCommand.LineIndex, funcName,
-                        _executionQueue.Count > 0 ? _executionQueue.First.Value : null));
+                        _currentRunningExecutionQueue.Count > 0 ? _currentRunningExecutionQueue.First.Value : null));
 
-                    InsertFunctionCommand(funcName);
+                    InsertFunctionCommands(funcName);
 
                     continue;
                 }
 
-                _breakPoints.Remove(currentCommand.LineIndex);
+                _currentRunningBreakPoints.Remove(currentCommand.LineIndex);
                 if (_stackTrace.Count > 0 && _stackTrace.Peek().breaker!=null
                     &&currentCommand.LineIndex == _stackTrace.Peek().breaker.LineIndex)
                 {
@@ -156,26 +165,28 @@ namespace KizhiPart3
                 _variablesCommandDelegator[currentCommand.CommandName](currentCommand.LineIndex, currentCommand.CommandParameters);
             }
 
+            _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
+            _variables.Clear();
+            _currentRunningBreakPoints = new HashSet<int>(_breakPoints);
         }
 
         private void Step()
         {
-            if (_executionQueue.Count == 0) return;
-            var currentCommand = _executionQueue.First.Value;
-            _executionQueue.RemoveFirst();
+            var currentCommand = _currentRunningExecutionQueue.First.Value;
+            _currentRunningExecutionQueue.RemoveFirst();
             if (currentCommand.CommandName == "call")
             {
                 var funcName = currentCommand.CommandParameters[0];
                 _stackTrace.Push((currentCommand.LineIndex, funcName,
-                    _executionQueue.Count > 0 ? _executionQueue.First.Value : null));
+                    _currentRunningExecutionQueue.Count > 0 ? _currentRunningExecutionQueue.First.Value : null));
 
-                InsertFunctionCommand(funcName);
+                InsertFunctionCommands(funcName);
 
-                _breakPoints.Remove(_executionQueue.First.Value.LineIndex);
+                _currentRunningBreakPoints.Remove(_currentRunningExecutionQueue.First.Value.LineIndex);
                 return;
             }
 
-            _breakPoints.Remove(currentCommand.LineIndex);
+            _currentRunningBreakPoints.Remove(currentCommand.LineIndex);
 
             if (_stackTrace.Count > 0 && _stackTrace.Peek().breaker != null
                                       && currentCommand.LineIndex == _stackTrace.Peek().breaker.LineIndex)
@@ -184,34 +195,39 @@ namespace KizhiPart3
             }
 
             _variablesCommandDelegator[currentCommand.CommandName](currentCommand.LineIndex, currentCommand.CommandParameters);
+
+            if (_currentRunningExecutionQueue.Count == 0)
+            {
+                _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
+                _variables.Clear();
+                _currentRunningBreakPoints = new HashSet<int>(_breakPoints);
+            }
         }
 
         private void StepOver()
         {
-            if (_executionQueue.Count == 0) return;
-
-            if (_executionQueue.First.Value.CommandName != "call")
+            if (_currentRunningExecutionQueue.First.Value.CommandName != "call")
             {
                 Step();
                 return;
             }
 
-            var currentCommand = _executionQueue.First.Value;
-            _executionQueue.RemoveFirst();
+            var currentCommand = _currentRunningExecutionQueue.First.Value;
+            _currentRunningExecutionQueue.RemoveFirst();
 
             var funcName = currentCommand.CommandParameters[0];
-            var breaker = _executionQueue.Count > 0 ? _executionQueue.First.Value : null;
+            var breaker = _currentRunningExecutionQueue.Count > 0 ? _currentRunningExecutionQueue.First.Value : null;
             _stackTrace.Push((currentCommand.LineIndex, funcName, breaker));
 
-            InsertFunctionCommand(funcName);
+            InsertFunctionCommands(funcName);
 
-            _breakPoints.Remove(_executionQueue.Last.Value.LineIndex);
+            _currentRunningBreakPoints.Remove(_currentRunningExecutionQueue.Last.Value.LineIndex);
 
             switch (breaker)
             {
                 case null:
                 {
-                    _breakPoints.Clear();
+                    _currentRunningBreakPoints.Clear();
                     Run();
                     _stackTrace.Clear();
                     break;
@@ -219,7 +235,7 @@ namespace KizhiPart3
 
                 default:
                 {
-                    while (_executionQueue.First.Value.LineIndex != breaker.LineIndex)
+                    while (_currentRunningExecutionQueue.First.Value.LineIndex != breaker.LineIndex)
                     {
                         Step();
                     }

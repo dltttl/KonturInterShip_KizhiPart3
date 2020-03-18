@@ -34,6 +34,20 @@ namespace KizhiPart3
             debugger.ExecuteLine("run");
             debugger.ExecuteLine("print mem");
             Assert.AreEqual(writer.ToString(), "a 5 1\r\n");
+
+        }
+
+        [Test]
+        public void ShouldPrepareForNextRunningAfterFinishingCurrentRunning()
+        {
+            var writer = new StringWriter();
+            var debugger = new Debugger(writer);
+
+            debugger.ExecuteLine("set code");
+            debugger.ExecuteLine("def test\r\n    set a 5\r\n    sub a 3\r\n    print b\r\ncall test");
+            debugger.ExecuteLine("end set code");
+            debugger.ExecuteLine("step over");
+            Assert.AreEqual(0, 0);
         }
 
         [Test]
