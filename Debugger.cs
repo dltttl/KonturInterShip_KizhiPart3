@@ -132,6 +132,14 @@ namespace KizhiPart3
             }
         }
 
+        private void PrepareForNextRunning()
+        {
+            _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
+            _variables.Clear();
+            _currentRunningBreakPoints = new HashSet<int>(_breakPoints);
+        }
+
+
         private void Run()
         {
             while (_currentRunningExecutionQueue.Count > 0)
@@ -165,9 +173,7 @@ namespace KizhiPart3
                 _variablesCommandDelegator[currentCommand.CommandName](currentCommand.LineIndex, currentCommand.CommandParameters);
             }
 
-            _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
-            _variables.Clear();
-            _currentRunningBreakPoints = new HashSet<int>(_breakPoints);
+            PrepareForNextRunning();
         }
 
         private void Step()
@@ -198,9 +204,7 @@ namespace KizhiPart3
 
             if (_currentRunningExecutionQueue.Count == 0)
             {
-                _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
-                _variables.Clear();
-                _currentRunningBreakPoints = new HashSet<int>(_breakPoints);
+                PrepareForNextRunning();
             }
         }
 
