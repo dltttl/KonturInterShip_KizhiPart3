@@ -6,84 +6,39 @@ namespace KizhiPart3
     [TestFixture]
     public class DebuggerTests
     {
-        [Test]
-        public void ShouldPrintMem()
+        private TextWriter _writer;
+        private Debugger _debugger;
+
+        [SetUp]
+        public void SetUp()
         {
-            var writer = new StringWriter();
-            var debugger = new Debugger(writer);
-
-            debugger.ExecuteLine("set code");
-            debugger.ExecuteLine("print a\r\ncall A\r\ndef A\r\n    set a 12\r\n    sub a 1\r\n    rem a\r\nprint a\r\ncall A\r\nprint a");
-            debugger.ExecuteLine("end set code");
-            debugger.ExecuteLine("add break 4");
-            debugger.ExecuteLine("run");
-            debugger.ExecuteLine("print mem");
-            Assert.AreEqual(writer.ToString(), "");
+            _writer = new StringWriter();
+            _debugger = new Debugger(_writer);
         }
-
+        
         [Test]
         public void ShouldPrintMem2()
         {
-            var writer = new StringWriter();
-            var debugger = new Debugger(writer);
-
-            debugger.ExecuteLine("set code");
-            debugger.ExecuteLine("def test\r\n    set a 5\r\n    sub a 3\r\n    print b\r\ncall test");
-            debugger.ExecuteLine("end set code");
-            debugger.ExecuteLine("add break 2");
-            debugger.ExecuteLine("run");
-            debugger.ExecuteLine("print mem");
-            Assert.AreEqual(writer.ToString(), "a 5 1\r\n");
-
+            _debugger.ExecuteLine("def test\r\n    set a 5\r\n    sub a 3\r\n    print b\r\ncall test");
+            _debugger.ExecuteLine("add break 2");
+            _debugger.ExecuteLine("run");
+            _debugger.ExecuteLine("print mem");
+            Assert.AreEqual(_writer.ToString(), "a 5 1\r\n");
         }
 
         [Test]
-        public void ShouldPrepareForNextRunningAfterFinishingCurrentRunning()
+        public void ShouldDifficultPrintTraceWark()
         {
-            var writer = new StringWriter();
-            var debugger = new Debugger(writer);
-
-            debugger.ExecuteLine("set code");
-            debugger.ExecuteLine("def test\r\n    set a 5\r\n    sub a 3\r\n    print b\r\ncall test");
-            debugger.ExecuteLine("end set code");
-            debugger.ExecuteLine("step over");
-            Assert.AreEqual(0, 0);
-        }
-
-        [Test]
-        public void ShouldPrintTrace()
-        {
-            var writer = new StringWriter();
-            var debugger = new Debugger(writer);
-
-            debugger.ExecuteLine("set code");
-            debugger.ExecuteLine("def A\r\n    call B\r\ndef B\r\n    call A\r\ncall B");
-            debugger.ExecuteLine("end set code");
-            debugger.ExecuteLine("add break 1");
-            debugger.ExecuteLine("run");
-            debugger.ExecuteLine("print trace");
-            var trace = writer.ToString();
-            debugger.ExecuteLine("step over");
-            debugger.ExecuteLine("step over");
-            debugger.ExecuteLine("print trace");
-            Assert.AreEqual(0, 0);
-        }
-
-        [Test]
-        public void ShouldPrintTrace2()
-        {
-            var writer = new StringWriter();
-            var debugger = new Debugger(writer);
-
-            debugger.ExecuteLine("set code");
-            debugger.ExecuteLine("print a\r\ncall A\r\ndef A\r\n    set a 12\r\n    sub a 1\r\n    rem a\r\nprint a\r\ncall A\r\nprint a");
-            debugger.ExecuteLine("end set code");
-            debugger.ExecuteLine("add break 3");
-            debugger.ExecuteLine("run");
-            debugger.ExecuteLine("print trace");
-            var trace = writer.ToString();
-            debugger.ExecuteLine("run");
-            Assert.AreEqual(0, 0);
+            _debugger.ExecuteLine(
+                "def test\n    set a 5\n    call mocha\ndef govno\n    set b 7\ndef mocha\n    set c 8\n    call govno\ncall test\nprint a");
+            _debugger.ExecuteLine("add break 4");
+            _debugger.ExecuteLine("run");
+            _debugger.ExecuteLine("print mem");
+            _debugger.ExecuteLine("print trace");
+            _debugger.ExecuteLine("step over");
+            _debugger.ExecuteLine("print trace");
+            _debugger.ExecuteLine("print mem");
+            Assert.AreEqual(_writer.ToString(), "a 5 1\r\nc 8 6\r\n7 govno\r\n2 mocha\r\n8 test\r\na 5 1\r\nc 8 6\r\nb 7 4\r\n");
         }
 
     }

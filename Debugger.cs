@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -7,255 +8,270 @@ namespace KizhiPart3
 {
     public class Debugger
     { 
-        private TextWriter _writer;
+        private readonly TextWriter _writer;
 
-        private const string ErrorMessage = "Переменная отсутствует в памяти";
-
-        private readonly Dictionary<string, List<CommandModel>> _functions;
-        private readonly Dictionary<string, VariableModel> _variables;
-        private readonly Dictionary<string, Action<int, string[]>> _variablesCommandDelegator;
-
-        private readonly HashSet<int> _breakPoints;
-        private readonly Stack<(int line, string funcName, CommandModel breaker)> _stackTrace;
-        private readonly List<CommandModel> _executionQueue;
-
-        private LinkedList<CommandModel> _currentRunningExecutionQueue;
-        private HashSet<int> _currentRunningBreakPoints;
+        private readonly Dictionary<string, FuncInfo> _functions = new Dictionary<string, FuncInfo>();
+        private readonly List<CommandModel> _codeLines = new List<CommandModel>();
+        private IDebuggerSession _currentSession;
+        private readonly string[] _codeLinesSeparators = new string[] {"\r", "\n", "\r\n"};
 
         public Debugger(TextWriter writer)
         {
             _writer = writer;
-            _functions = new Dictionary<string, List<CommandModel>>();
-            _variables = new Dictionary<string, VariableModel>();
-            _executionQueue = new List<CommandModel>();
-            _currentRunningExecutionQueue = new LinkedList<CommandModel>();
-            _currentRunningBreakPoints = new HashSet<int>();
-            _breakPoints = new HashSet<int>();
-            _stackTrace = new Stack<(int line, string funcName, CommandModel breaker)>();
-
-            _variablesCommandDelegator = new Dictionary<string, Action<int, string[]>>
-            {
-                ["set"] = (callingLine, parameters) => Set(callingLine, parameters[0], int.Parse(parameters[1])),
-                ["sub"] = (callingLine, parameters) => Sub(callingLine, parameters[0], int.Parse(parameters[1])),
-                ["print"] = (callingLine, parameters) => Print(parameters[0]),
-                ["rem"] = (callingLine, parameters) => Remove(parameters[0]),
-            };
         }
 
         public void ExecuteLine(string command)
         {
-            if (command == "set code") return;
-            if (command == "end set code") return;
-            if (command == "run")
+            if (command == "set code" || command == "end set code") return;
+            switch (command)
             {
-                Run();
-                return;
+                case "run":
+                    SafeGetDebuggingSession().RunToNextBreakPoint();
+                    return;
+                case "step":
+                    SafeGetDebuggingSession().Step();
+                    return;
+                case "step over":
+                    SafeGetDebuggingSession().StepOver();
+                    return;
+                case "print trace":
+                    SafeGetDebuggingSession().PrintTrace();
+                    return;
+                case "print mem":
+                    SafeGetDebuggingSession().PrintMem();
+                    return;
             }
-
             if (command.StartsWith("add break"))
             {
-                var breakPoint = int.Parse(command.Substring(9));
-                _breakPoints.Add(breakPoint);
-                _currentRunningBreakPoints.Add(breakPoint);
+                var addingBreakPoint = int.Parse(command.Substring(9));
+                SafeGetDebuggingSession().AddBreakPoint(addingBreakPoint);
                 return;
             }
-
-            if (command == "print trace")
-            {
-                foreach (var (line, funcName, breaker) in _stackTrace)
-                {
-                    _writer.WriteLine($"{line} {funcName}");
-                }
-
-                return;
-            }
-
-            if (command == "print mem")
-            {
-                foreach (var variable in _variables)
-                {
-                    _writer.WriteLine($"{variable.Key} {variable.Value.Value} {variable.Value.LastChangingLineIndex}");
-                }
-
-                return;
-            }
-
-            if (command == "step")
-            {
-                Step();
-                return;
-            }
-
-            if (command == "step over")
-            {
-                StepOver();
-                return;
-            }
-
             Interpret(command);
+        }
+
+        private IDebuggerSession SafeGetDebuggingSession()
+        {
+            if (_currentSession == null || _currentSession.IsEnded)
+                _currentSession = new DebuggerSession(_writer, new VariablesExecutor(_writer), _codeLines, _functions );
+            return _currentSession;
         }
 
         private void Interpret(string code)
         {
-            var parsedCode = code.Split(new string[] { "\r\n", "\n", "\r" },
+            var parsedCode = code.Split(_codeLinesSeparators, 
                 StringSplitOptions.RemoveEmptyEntries);
             var lastFuncName = "";
-            for(var i = 0; i < parsedCode.Length; i++)
+
+            for (var i = 0; i < parsedCode.Length; i++)
             {
                 var codeLine = parsedCode[i];
+                CommandModel commandModel;
                 if (codeLine.StartsWith("    "))
                 {
-                    _functions[lastFuncName].Add(ParseCodeLine(i, codeLine.Substring(4)));
-                    continue;
+                    commandModel = ParseCodeLine(codeLine.TrimStart());
+                    _functions[lastFuncName].LastLineIndex++;
                 }
 
-                if (codeLine.StartsWith("def"))
+                else if (codeLine.StartsWith("def"))
                 {
-                    var funcName = codeLine.Substring(4);
-                    _functions[funcName] = new List<CommandModel>();
+                    commandModel = ParseCodeLine(codeLine);
+                    var funcName = commandModel.CommandParameters[0];
+                    _functions[funcName] = new FuncInfo(i);
                     lastFuncName = funcName;
-                    continue;
                 }
-
-                _executionQueue.Add(ParseCodeLine(i, codeLine));
+                else
+                {
+                    commandModel = ParseCodeLine(codeLine);
+                }
+                _codeLines.Add(commandModel);
             }
-
-            _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
         }
 
-        private void InsertFunctionCommands(string funcName)
+        private CommandModel ParseCodeLine(string codeLine)
         {
-            var currentFuncCommandsQueue = _functions[funcName];
-            for (var i = currentFuncCommandsQueue.Count - 1; i >= 0; i--)
+            var parsedCodeLine = codeLine.Split(' ');
+            return new CommandModel(parsedCodeLine[0], parsedCodeLine.Skip(1).ToArray());
+        }
+    }
+
+    internal interface IDebuggerSession
+    {
+        bool IsEnded { get; }
+        void RunToNextBreakPoint();
+        void Step();
+        void StepOver();
+        void PrintMem();
+        void PrintTrace();
+        void AddBreakPoint(int lineIndex);
+    }
+    
+    internal class DebuggerSession : IDebuggerSession
+    {
+        private readonly TextWriter _writer;
+        private readonly IReadOnlyList<CommandModel> _codeLines;
+        private readonly IReadOnlyDictionary<string, FuncInfo> _functions;
+        private readonly IVariablesExecutor _variablesExecutor;
+        private readonly Dictionary<string, Action<int, string[]>> _variablesCommandsDelegator;
+
+        private readonly Stack<StackTraceInfo> _stackTrace = new Stack<StackTraceInfo>();
+        
+        private readonly HashSet<int> _currentRunningBreakPoints = new HashSet<int>();
+
+        private int _currentPosition;
+
+        public bool IsEnded => _currentPosition >= _codeLines.Count;
+        
+        public DebuggerSession(TextWriter writer, IVariablesExecutor variablesExecutor, IReadOnlyList<CommandModel> codeLines,
+            IReadOnlyDictionary<string, FuncInfo> functions)
+        {
+            _writer = writer;
+            _variablesExecutor = variablesExecutor;
+            _functions = functions;
+            _codeLines = codeLines;
+
+            _variablesCommandsDelegator = new Dictionary<string, Action<int, string[]>>
             {
-                _currentRunningExecutionQueue.AddFirst(currentFuncCommandsQueue[i]);
-            }
+                ["set"] = (callLine, parameters) => 
+                    _variablesExecutor.Set(callLine, parameters[0], int.Parse(parameters[1])),
+                ["sub"] = (callLine, parameters) => 
+                    _variablesExecutor.Sub(callLine, parameters[0], int.Parse(parameters[1])),
+                ["print"] = (callLine, parameters) => 
+                    _variablesExecutor.Print(parameters[0]),
+                ["rem"] = (callLine, parameters) => 
+                    _variablesExecutor.Remove(parameters[0]),
+            };
         }
 
-        private void PrepareForNextRunning()
+        public void RunToNextBreakPoint()
         {
-            _currentRunningExecutionQueue = new LinkedList<CommandModel>(_executionQueue);
-            _variables.Clear();
-            _currentRunningBreakPoints = new HashSet<int>(_breakPoints);
-        }
-
-
-        private void Run()
-        {
-            while (_currentRunningExecutionQueue.Count > 0)
+            while (!IsEnded)
             {
-                var currentCommand = _currentRunningExecutionQueue.First.Value;
-                if (_currentRunningBreakPoints.Contains(currentCommand.LineIndex))
-                {
-                    _currentRunningBreakPoints.Remove(currentCommand.LineIndex);
-                    return;
-                }
-                _currentRunningExecutionQueue.RemoveFirst();
-
-                if (currentCommand.CommandName == "call")
-                {
-                    var funcName = currentCommand.CommandParameters[0];
-                    _stackTrace.Push((currentCommand.LineIndex, funcName,
-                        _currentRunningExecutionQueue.Count > 0 ? _currentRunningExecutionQueue.First.Value : null));
-
-                    InsertFunctionCommands(funcName);
-
-                    continue;
-                }
-
-                _currentRunningBreakPoints.Remove(currentCommand.LineIndex);
-                if (_stackTrace.Count > 0 && _stackTrace.Peek().breaker!=null
-                    &&currentCommand.LineIndex == _stackTrace.Peek().breaker.LineIndex)
-                {
-                    _stackTrace.Pop();
-                }
-
-                _variablesCommandDelegator[currentCommand.CommandName](currentCommand.LineIndex, currentCommand.CommandParameters);
+                Step();
+                if (_currentRunningBreakPoints.Contains(_currentPosition))
+                    break;
             }
-
-            PrepareForNextRunning();
         }
 
-        private void Step()
+        public void Step()
         {
-            var currentCommand = _currentRunningExecutionQueue.First.Value;
-            _currentRunningExecutionQueue.RemoveFirst();
-            if (currentCommand.CommandName == "call")
+            var currentCommand = _codeLines[_currentPosition];
+            if (currentCommand.CommandName == "def")
             {
                 var funcName = currentCommand.CommandParameters[0];
-                _stackTrace.Push((currentCommand.LineIndex, funcName,
-                    _currentRunningExecutionQueue.Count > 0 ? _currentRunningExecutionQueue.First.Value : null));
-
-                InsertFunctionCommands(funcName);
-
-                _currentRunningBreakPoints.Remove(_currentRunningExecutionQueue.First.Value.LineIndex);
+                _currentPosition = _functions[funcName].LastLineIndex + 1;
                 return;
             }
 
-            _currentRunningBreakPoints.Remove(currentCommand.LineIndex);
-
-            if (_stackTrace.Count > 0 && _stackTrace.Peek().breaker != null
-                                      && currentCommand.LineIndex == _stackTrace.Peek().breaker.LineIndex)
+            if (currentCommand.CommandName == "call")
             {
-                _stackTrace.Pop();
+                var funcName = currentCommand.CommandParameters[0];
+                var funcInfo = GetFuncInfo(funcName);
+                _stackTrace.Push(new StackTraceInfo(funcName, _currentPosition, funcInfo.LastLineIndex));
+                _currentPosition = funcInfo.DefineLineIndex + 1;
+                return;
             }
 
-            _variablesCommandDelegator[currentCommand.CommandName](currentCommand.LineIndex, currentCommand.CommandParameters);
-
-            if (_currentRunningExecutionQueue.Count == 0)
-            {
-                PrepareForNextRunning();
-            }
+            _variablesCommandsDelegator[currentCommand.CommandName](_currentPosition, currentCommand.CommandParameters);
+            _currentPosition = CleanUpStackTraceIfNeedAndGetPointerToReturn();
+            _currentPosition++;
         }
 
-        private void StepOver()
+        public void StepOver()
         {
-            if (_currentRunningExecutionQueue.First.Value.CommandName != "call")
+            var currentCommand = _codeLines[_currentPosition];
+            if (currentCommand.CommandName != "call")
             {
                 Step();
                 return;
             }
 
-            var currentCommand = _currentRunningExecutionQueue.First.Value;
-            _currentRunningExecutionQueue.RemoveFirst();
-
             var funcName = currentCommand.CommandParameters[0];
-            var breaker = _currentRunningExecutionQueue.Count > 0 ? _currentRunningExecutionQueue.First.Value : null;
-            _stackTrace.Push((currentCommand.LineIndex, funcName, breaker));
+            var funcInfo = _functions[funcName];
 
-            InsertFunctionCommands(funcName);
-
-            _currentRunningBreakPoints.Remove(_currentRunningExecutionQueue.Last.Value.LineIndex);
-
-            switch (breaker)
+            var lineAfterFuncIndex = GetPointerToReturnIfStepOver() + 1;
+            while (_currentPosition != lineAfterFuncIndex)
             {
-                case null:
-                {
-                    _currentRunningBreakPoints.Clear();
-                    Run();
-                    _stackTrace.Clear();
-                    break;
-                }
-
-                default:
-                {
-                    while (_currentRunningExecutionQueue.First.Value.LineIndex != breaker.LineIndex)
-                    {
-                        Step();
-                    }
-
-                    break;
-                }
+                Step();
             }
         }
 
-        private CommandModel ParseCodeLine(int lineIndex, string codeLine)
+        private int CleanUpStackTraceIfNeedAndGetPointerToReturn()
         {
-            var parsedCodeLine = codeLine.Split(' ');
-            return new CommandModel(lineIndex, parsedCodeLine[0], parsedCodeLine.Skip(1).ToArray());
+            if (_stackTrace.Count == 0) return _currentPosition;
+            var possiblePosition = _currentPosition;
+            while (_stackTrace.Count!=0)
+            {
+                if (possiblePosition != _stackTrace.Peek().LastLine)
+                    break;
+                possiblePosition = _stackTrace.Pop().CallLine;
+            }
+
+            return possiblePosition;
         }
 
-        private void Set(int settingLine, string variableName, int settingValue)
+        private int GetPointerToReturnIfStepOver()
+        {
+            if (_stackTrace.Count == 0) return _currentPosition;
+            var possiblePosition = _currentPosition;
+            foreach (var stackTraceInfo in _stackTrace.TakeWhile(stackTraceInfo => possiblePosition == stackTraceInfo.LastLine))
+            {
+                possiblePosition = stackTraceInfo.CallLine;
+            }
+            return possiblePosition;
+        }
+
+        private FuncInfo GetFuncInfo(string funcName)
+        {
+            if (!_functions.TryGetValue(funcName, out var funcInfo))
+                throw new ArgumentException($"Function {funcName} was not found");
+            return funcInfo;
+        }
+
+        public void AddBreakPoint(int lineIndex)
+        {
+            _currentRunningBreakPoints.Add(lineIndex);
+        }
+
+        public void PrintMem()
+        {
+            foreach (var (variableName, variableModel) in _variablesExecutor)
+            {
+                _writer.WriteLine($"{variableName} {variableModel.Value} {variableModel.LastChangingLineIndex}");
+            }
+        }
+
+        public void PrintTrace()
+        {
+            foreach (var stackTraceRecord in _stackTrace)
+            {
+                _writer.WriteLine($"{stackTraceRecord.CallLine} {stackTraceRecord.FuncName}");
+            }
+        }
+    }
+
+    internal interface IVariablesExecutor : IEnumerable<(string, VariableModel)>
+    {
+        void Set(int line, string variableName, int settingValue);
+
+        void Sub(int line, string variableName, int subbingValue);
+
+        void Print(string variableName);
+
+        void Remove(string variableName);
+    }
+
+    internal class VariablesExecutor : IVariablesExecutor
+    {
+        private readonly TextWriter _writer;
+        private readonly Dictionary<string, VariableModel> _variables = new Dictionary<string, VariableModel>();
+        private const string ErrorMessage = "Переменная отсутствует в памяти";
+
+        public VariablesExecutor(TextWriter writer)
+        {
+            _writer = writer;
+        }
+        public void Set(int settingLine, string variableName, int settingValue)
         {
             if (_variables.TryGetValue(variableName, out var record))
             {
@@ -266,7 +282,7 @@ namespace KizhiPart3
             _variables[variableName] = new VariableModel(settingValue, settingLine);
         }
 
-        private void Sub(int subbingLine, string variableName, int subbingValue)
+        public void Sub(int subbingLine, string variableName, int subbingValue)
         {
             if (!_variables.TryGetValue(variableName, out var record))
             {
@@ -278,12 +294,13 @@ namespace KizhiPart3
             record.Value -= subbingValue;
         }
 
-        private void Print(string variableName)
+        public void Print(string variableName)
         {
-            _writer.WriteLine(_variables.TryGetValue(variableName, out var value) ? value.Value.ToString() : ErrorMessage);
+            _writer.WriteLine(_variables.TryGetValue(variableName, out var value) ? 
+                value.Value.ToString() : ErrorMessage);
         }
 
-        private void Remove(string variableName)
+        public void Remove(string variableName)
         {
             if (!_variables.ContainsKey(variableName))
             {
@@ -293,17 +310,26 @@ namespace KizhiPart3
 
             _variables.Remove(variableName);
         }
+
+        public IEnumerator<(string, VariableModel)> GetEnumerator()
+        {
+            return _variables.Select(variableInfo => 
+                (variableInfo.Key, variableInfo.Value)).GetEnumerator();
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
     }
 
     internal class CommandModel
     {
-        public int LineIndex { get; }
         public string CommandName { get; }
         public string[] CommandParameters { get; }
 
-        public CommandModel(int lineIndex, string commandName, string[] commandParameters)
+        public CommandModel(string commandName, string[] commandParameters)
         {
-            LineIndex = lineIndex;
             CommandName = commandName;
             CommandParameters = commandParameters;
         }
@@ -318,6 +344,33 @@ namespace KizhiPart3
         {
             Value = value;
             LastChangingLineIndex = lastChangingIndex;
+        }
+    }
+    
+    internal class FuncInfo
+    {
+        public int DefineLineIndex { get; }
+        public int LastLineIndex { get; set; }
+
+        public FuncInfo(int defineLineIndex)
+        {
+            DefineLineIndex = defineLineIndex;
+            LastLineIndex = defineLineIndex;
+        }
+        
+    }
+
+    internal class StackTraceInfo
+    {
+        public string FuncName { get; }
+        public int CallLine { get; }
+        public int LastLine { get; set; }
+
+        public StackTraceInfo(string funcName, int callLine, int lastLine)
+        {
+            FuncName = funcName;
+            CallLine = callLine;
+            LastLine = lastLine;
         }
     }
 }
